@@ -8,6 +8,8 @@
 
 const DAYS = 14;            // montako päivää taaksepäin
 const CACHE_SECONDS = 120;  // Netlifyn välimuistin kesto
+const AHEAD_DAYS = 14;      // montako päivää eteenpäin etsitään tulevia otteluita
+const NEXT_COUNT = 15;      // montako tulevaa ottelua palautetaan sarjaa kohden (sivu näyttää 5 tai 15)
 const UA = "pitkavetotulokset/1.0 (+personal project)";
 
 const ESPN_LEAGUES = [
@@ -47,6 +49,11 @@ async function fetchLiiga(now, start) {
   const season = now.getUTCMonth() >= 6 ? now.getUTCFullYear() + 1 : now.getUTCFullYear(); // kausi 2026–27 = "2027"
   const data = (await getJSON(`https://liiga.fi/api/v2/games?tournament=runkosarja&season=${season}`)) || [];
   const games = [];
+  const upcoming = data
+    .filter((g) => !g.started && new Date(g.start) > now)
+    .sort((a, b) => new Date(a.start) - new Date(b.start))
+    .slice(0, NEXT_COUNT)
+    .map((g) => ({ t: new Date(g.start).toISOString(), home: g.homeTeam.teamName || "?", away: g.awayTeam.teamName || "?" }));
   for (const g of data) {
     const t = new Date(g.start);
     if (t < start || t > now || !g.ended) continue;
@@ -67,7 +74,7 @@ async function fetchLiiga(now, start) {
       status: "post", note, regH, regA,
     });
   }
-  return { id: "liiga", name: "Suomi", sport: "ih", games };
+  return { id: "liiga", name: "Suomi", sport: "ih", games, upcoming };
 }
 
 // ------------------------------------------------------------ Mestis
@@ -90,41 +97,50 @@ async function fetchMestis(now, start) {
   const y = now.getUTCMonth() >= 6 ? now.getUTCFullYear() : now.getUTCFullYear() - 1;
   const html = await getText(`https://mestis.fi/fi/ottelut/${y}-${y + 1}/runkosarja/`);
   const games = [];
+  const upcoming = [];
   for (const m of html.matchAll(/<tr data-time="(\d{8})">([\s\S]*?)<\/tr>/g)) {
     const c = cells(m[2]);
     if (c.length < 7 || !c[3].includes(" - ")) continue;
     const day = m[1];
     const [hh, mm] = (c[2] || "18:30").split(":").map(Number);
     const t = helsinkiToUTC(+day.slice(0, 4), +day.slice(4, 6), +day.slice(6, 8), hh || 18, mm || 0);
-    if (t < start || t > now) continue;
     const sc = c[5].match(/(\d+)\D+(\d+)/);
-    if (!sc) continue;
     const [home, away] = c[3].split(" - ").map((s) => s.trim());
+    if (!sc && t > now) { upcoming.push({ t: t.toISOString(), home, away }); continue; }
+    if (t < start || t > now || !sc) continue;
     const note = { JA: "ja", VL: "vl" }[c[6].toUpperCase()] || "";
     const hs = +sc[1], as = +sc[2];
     const reg = note ? Math.min(hs, as) : null;
     games.push({ t: t.toISOString(), home, away, hs, as, status: "post", note, regH: reg, regA: reg });
   }
-  return { id: "mestis", name: "Mestis", sport: "ih", games };
+  upcoming.sort((a, b) => new Date(a.t) - new Date(b.t));
+  return { id: "mestis", name: "Mestis", sport: "ih", games, upcoming: upcoming.slice(0, NEXT_COUNT) };
 }
 
 // ------------------------------------------------------------ ESPN
 async function fetchEspn(lg, now, start) {
   const days = [];
-  for (let d = new Date(start); d <= now; d = new Date(d.getTime() + 864e5)) days.push(ymd(d));
+  const until = new Date(now.getTime() + AHEAD_DAYS * 864e5);
+  for (let d = new Date(start); d <= until; d = new Date(d.getTime() + 864e5)) days.push(ymd(d));
   const results = await Promise.all(days.map((d) =>
     getJSON(`https://site.api.espn.com/apis/site/v2/sports/${lg.path}/scoreboard?dates=${d}`)));
   const seen = new Set();
   const games = [];
+  const upcoming = [];
   for (const data of results) {
     for (const e of data?.events || []) {
       if (seen.has(e.id)) continue;
       seen.add(e.id);
       const c = e.competitions[0];
       const st = c.status.type;
-      if (st.state !== "post") continue;
       const home = c.competitors.find((x) => x.homeAway === "home");
       const away = c.competitors.find((x) => x.homeAway === "away");
+      const nm = (x) => x.team.shortDisplayName || x.team.displayName;
+      if (st.state === "pre" && new Date(e.date) > now) {
+        upcoming.push({ t: new Date(e.date).toISOString(), home: nm(home), away: nm(away) });
+        continue;
+      }
+      if (st.state !== "post") continue;
       const detail = (st.shortDetail || st.detail || "").toUpperCase();
       let note = "";
       if (detail.includes("SO")) note = "vl";
@@ -139,7 +155,8 @@ async function fetchEspn(lg, now, start) {
       });
     }
   }
-  return { id: lg.id, name: lg.name, sport: lg.sport, games };
+  upcoming.sort((a, b) => new Date(a.t) - new Date(b.t));
+  return { id: lg.id, name: lg.name, sport: lg.sport, games, upcoming: upcoming.slice(0, NEXT_COUNT) };
 }
 
 export default async () => {

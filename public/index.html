@@ -157,7 +157,24 @@ tbody tr:hover { background: var(--bg); }
 .facts div { display: flex; flex-direction: column; }
 .facts span { color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; font-weight: 600; }
 .facts b { font-family: var(--f-display); font-size: 18px; font-variant-numeric: tabular-nums; }
-.stats-title { margin: 14px 0 0; font-family: var(--f-display); font-weight: 600; font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.nx { list-style: none; margin: 0; padding: 0; display: grid; }
+.nx li { display: grid; grid-template-columns: 74px minmax(0,1fr); gap: 10px; align-items: baseline; padding: 7px 0; border-top: 1px solid var(--line); }
+.nx li:first-child { border-top: 0; padding-top: 2px; }
+.nx .when { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12.5px; font-weight: 600; line-height: 1.25; }
+.nx .when b { display: block; color: var(--fg); font-family: var(--f-display); font-size: 17px; font-weight: 700; }
+.nx .who { font-weight: 600; font-size: 15px; overflow-wrap: anywhere; }
+.nx .who span { color: var(--muted); font-weight: 400; margin: 0 4px; }
+.nx-empty { color: var(--muted); font-size: 13px; }
+.stats-title { margin: 22px 0 0; font-family: var(--f-display); font-weight: 700; font-size: 22px; color: var(--fg); display: flex; align-items: baseline; gap: 10px; }
+.stats-title small { font: 600 13px var(--f-body); color: var(--muted); }
+/* Played games: own clearly separated section */
+.played { margin-top: 36px; padding-top: 18px; border-top: 3px solid var(--brand); }
+.played .sec-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.played h2.sec { margin: 0; font-family: var(--f-display); font-weight: 700; font-size: 28px; color: var(--brand); }
+.played h2.sec small { font: 600 14px var(--f-body); color: var(--muted); margin-left: 8px; font-variant-numeric: tabular-nums; }
+.played .tools { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
+.played .tools .search { flex: 1 1 220px; }
+.played .day:first-child { margin-top: 18px; }
 
 .main { padding-bottom: 32px; }
 footer { color: var(--muted); font-size: 13px; padding-block: 28px 32px; max-width: 70ch; display: grid; gap: 6px; }
@@ -194,11 +211,19 @@ footer p { margin: 0; }
 <main class="wrap main">
   <div class="controls">
     <div class="chips leagues" id="leagues" aria-label="Sarja"></div>
-    <div class="seg" id="show" role="group" aria-label="Näytä"></div>
-    <input class="search" id="q" type="search" placeholder="Hae joukkuetta…" aria-label="Hae joukkuetta">
   </div>
   <div id="statwrap"></div>
-  <div id="out"></div>
+  <div id="nextwrap"></div>
+  <section class="played" aria-labelledby="played-title">
+    <div class="sec-head">
+      <h2 class="sec" id="played-title">Pelatut ottelut<small id="n-played"></small></h2>
+    </div>
+    <div class="tools">
+      <div class="seg" id="show" role="group" aria-label="Näytä"></div>
+      <input class="search" id="q" type="search" placeholder="Hae joukkuetta…" aria-label="Hae joukkuetta">
+    </div>
+    <div id="out"></div>
+  </section>
 </main>
 
 <script>
@@ -302,6 +327,45 @@ function renderShow() {
 const pct = (n, d) => d ? Math.round(n / d * 100) : 0;
 const dec = v => v.toFixed(1).replace(".", ",");
 
+const fmtShort = new Intl.DateTimeFormat("fi-FI", { timeZone: TZ, weekday: "short", day: "numeric", month: "numeric" });
+function renderNext() {
+  const wrap = document.getElementById("nextwrap"); wrap.innerHTML = "";
+  if (!DATA) return;
+  const list = leagues.filter(l => l.sport === state.sport && (state.league === "all" || l.name === state.league));
+  if (!list.length) return;
+  const single = list.length === 1;
+  wrap.appendChild(el("h2", "stats-title", "Seuraavat ottelut<small>" + (single ? "15 seuraavaa" : "5 seuraavaa per sarja") + "</small>"));
+  const grid = el("div", "stats");
+
+  // One card = up to 5 games. Single league: split its next 15 into three cards (1–5, 6–10, 11–15).
+  const cards = [];
+  list.forEach(l => {
+    const up = l.upcoming || [];
+    if (!single) { cards.push({ title: l.name, games: up.slice(0, 5) }); return; }
+    for (let i = 0; i < 15; i += 5) {
+      const chunk = up.slice(i, i + 5);
+      if (!chunk.length && i > 0) break;
+      cards.push({ title: l.name, sub: "ottelut " + (i + 1) + ".–" + (i + chunk.length) + ".", games: chunk });
+    }
+  });
+
+  cards.forEach(c => {
+    const card = el("div", "stat");
+    card.appendChild(el("div", "hd", '<span class="nm">' + esc(c.title) + "</span>" + (c.sub ? '<span class="ct">' + esc(c.sub) + "</span>" : "")));
+    if (!c.games.length) { card.appendChild(el("div", "nx-empty", "Ei otteluita seuraavaan kahteen viikkoon.")); grid.appendChild(card); return; }
+    const ul = el("ul", "nx");
+    c.games.forEach(g => {
+      const d = new Date(g.t);
+      ul.appendChild(el("li", "",
+        '<span class="when"><b>' + fmtTime.format(d) + "</b>" + fmtShort.format(d) + "</span>" +
+        '<span class="who">' + esc(g.home) + "<span>–</span>" + esc(g.away) + "</span>"));
+    });
+    card.appendChild(ul);
+    grid.appendChild(card);
+  });
+  wrap.appendChild(grid);
+}
+
 function renderStats() {
   const wrap = document.getElementById("statwrap"); wrap.innerHTML = "";
   if (!DATA) return;
@@ -310,7 +374,7 @@ function renderStats() {
   const order = leagues.map(l => l.name);
   names.sort((a, b) => order.indexOf(a) - order.indexOf(b));
   if (!names.length) return;
-  wrap.appendChild(el("h2", "stats-title", "Tilastot · " + (state.league === "all" ? "viimeiset 14 päivää" : esc(state.league))));
+  wrap.appendChild(el("h2", "stats-title", "Tilastot<small>viimeiset 14 päivää</small>"));
   const grid = el("div", "stats");
   names.forEach(name => {
     const gs = base.filter(g => g.league === name);
@@ -324,24 +388,24 @@ function renderStats() {
     card.appendChild(el("div", "hd", '<span class="nm">' + esc(name) + '</span><span class="ct">' + n + " ottelua</span>"));
     const bar = el("div", "dist");
     bar.setAttribute("role", "img");
-    bar.setAttribute("aria-label", "1: " + p[0] + " %, X: " + p[1] + " %, 2: " + p[2] + " %");
+    bar.setAttribute("aria-label", "(1) " + p[0] + "%, (X) " + p[1] + "%, (2) " + p[2] + "%");
     [["o1", "1", c[0], p[0]], ["ox", "X", c[1], p[1]], ["o2", "2", c[2], p[2]]].forEach(([cls, k, v, pp]) => {
       if (!v) return;
-      const sg = el("span", cls, pp >= 12 ? k + " " + pp + " %" : (pp >= 6 ? k : ""));
+      const sg = el("span", cls, pp >= 14 ? "(" + k + ") " + pp + "%" : (pp >= 7 ? "(" + k + ")" : ""));
       sg.style.flex = String(v);
-      sg.title = k + ": " + v + " ottelua (" + pp + " %)";
+      sg.title = "(" + k + ") " + pp + "% · " + v + " ottelua";
       bar.appendChild(sg);
     });
     card.appendChild(bar);
     card.appendChild(el("div", "dk",
-      "<span><b>1</b> " + c[0] + " · " + p[0] + " %</span>" +
-      (sport === "bb" ? "" : "<span><b>X</b> " + c[1] + " · " + p[1] + " %</span>") +
-      "<span><b>2</b> " + c[2] + " · " + p[2] + " %</span>"));
+      "<span><b>(1)</b> " + p[0] + "% · " + c[0] + "</span>" +
+      (sport === "bb" ? "" : "<span><b>(X)</b> " + p[1] + "% · " + c[1] + "</span>") +
+      "<span><b>(2)</b> " + p[2] + "% · " + c[2] + "</span>"));
     const unit = sport === "bb" ? "Pisteitä / ottelu" : "Maaleja / ottelu";
     const otLabel = sport === "fb" ? "Jatkoajalle" : "Jatkoajalle / vl";
     card.appendChild(el("div", "facts",
       "<div><span>" + unit + "</span><b>" + dec(goals) + "</b></div>" +
-      "<div><span>" + otLabel + "</span><b>" + ot + " · " + pct(ot, n) + " %</b></div>"));
+      "<div><span>" + otLabel + "</span><b>" + pct(ot, n) + "% · " + ot + "</b></div>"));
     grid.appendChild(card);
   });
   wrap.appendChild(grid);
@@ -430,9 +494,11 @@ function render() {
   renderChips();
   renderShow();
   renderStats();
+  renderNext();
   const rows = filtered();
   const up = rows.filter(g => g.status !== "post"), done = rows.filter(g => g.status === "post");
   document.getElementById("n-done").textContent = done.length;
+  document.getElementById("n-played").textContent = DATA ? done.length + " ottelua" : "";
   const out = document.getElementById("out"); out.innerHTML = "";
   if (!DATA) {
     if (loadError) { out.appendChild(errorBox()); return; }
