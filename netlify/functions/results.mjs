@@ -4,6 +4,8 @@
 // Lähteet (ilmaiset, ei avainta):
 //   Liiga  -> liiga.fi/api/v2/games
 //   Mestis -> mestis.fi (otteluohjelmasivun HTML)
+//   SHL ja HockeyAllsvenskan -> shl.se:n sivuston rajapinta
+//   Maaottelut (Euro Hockey Tour ym.) ja Suomi-sarja -> tulospalvelu.leijonat.fi
 //   Muut   -> ESPN:n julkinen scoreboard-rajapinta
 
 const DAYS = 14;            // montako päivää taaksepäin
@@ -122,6 +124,123 @@ async function fetchMestis(now, start) {
   return { id: "mestis", name: "Mestis", sport: "ih", games, upcoming: upcoming.slice(0, NEXT_COUNT) };
 }
 
+// ------------------------------------------------------------ Jääkiekkoliiton tulospalvelu
+// Palauttaa ottelut päivä kerrallaan, joten haetaan jokainen päivä erikseen (rinnakkain).
+// Tasoja (LevelID): 127 = miesten maajoukkue (Euro Hockey Tour, MM, olympialaiset), 66 = Suomi-sarja.
+const FINHOCKEY_LEVELS = [
+  { id: "nt", name: "Maaottelut", level: 127 },
+  { id: "suomisarja", name: "Suomi-sarja", level: 66 },
+];
+const COUNTRY = {
+  FIN: "Suomi", SWE: "Ruotsi", CZE: "Tšekki", SUI: "Sveitsi", SVK: "Slovakia", GER: "Saksa", USA: "USA",
+  CAN: "Kanada", LAT: "Latvia", NOR: "Norja", DEN: "Tanska", AUT: "Itävalta", FRA: "Ranska", KAZ: "Kazakstan",
+  SLO: "Slovenia", HUN: "Unkari", POL: "Puola", GBR: "Iso-Britannia", ITA: "Italia",
+};
+
+// Muuntaa annetun aikavyöhykkeen paikallisen ajan UTC:ksi.
+function zonedToUTC(dateStr, timeStr, tz) {
+  const [y, mo, d] = dateStr.split("-").map(Number);
+  const [h, mi] = (timeStr || "00:00").split(":").map(Number);
+  const guess = Date.UTC(y, mo - 1, d, h, mi);
+  try {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat("en-GB", {
+      timeZone: tz || "Europe/Helsinki", hourCycle: "h23",
+      year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+    }).formatToParts(new Date(guess)).map((p) => [p.type, p.value]));
+    const asLocal = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute);
+    return new Date(guess - (asLocal - guess));
+  } catch {
+    return new Date(guess - 2 * 3600e3);
+  }
+}
+
+async function fetchFinHockey(now, start) {
+  const days = [];
+  const until = new Date(now.getTime() + AHEAD_DAYS * 864e5);
+  for (let d = new Date(start); d <= until; d = new Date(d.getTime() + 864e5)) days.push(d.toISOString().slice(0, 10));
+  const results = await Promise.all(days.map((d) => getJSON(
+    `https://tulospalvelu.leijonat.fi/helpers/getgames?season=0&subSerieId=0&teamid=0&districtid=-1&gamedays=-1&dog=${d}&levelid=-1`)));
+
+  // Jos tulospalvelu esti kaikki haut (esim. palvelimen IP-osoitteen takia), jätetään sarjat pois.
+  if (!results.some((r) => Array.isArray(r))) return FINHOCKEY_LEVELS.map(() => null);
+  const out = FINHOCKEY_LEVELS.map((l) => ({ id: l.id, name: l.name, sport: "ih", games: [], upcoming: [], _seen: new Set() }));
+  for (const levels of results) {
+    for (const lv of Array.isArray(levels) ? levels : []) {
+      const idx = FINHOCKEY_LEVELS.findIndex((l) => l.level === lv.LevelID);
+      if (idx < 0) continue;
+      const target = out[idx];
+      for (const g of lv.Games || []) {
+        if (target._seen.has(g.GameID)) continue;
+        target._seen.add(g.GameID);
+        const t = zonedToUTC(g.GameDateDB, g.GameTime, g.TimeZone);
+        const abbr = (x) => (x || "").trim();
+        const name = (a, temp) => COUNTRY[abbr(a)] || abbr(a) || (temp || "").trim() || "?";
+        const home = name(g.HomeTeamAbbrv, g.HomeTeamTempName);
+        const away = name(g.AwayTeamAbbrv, g.AwayTeamTempName);
+        if (g.GameStatus === 0) {
+          if (t > now) target.upcoming.push({ t: t.toISOString(), home, away });
+          continue;
+        }
+        if (g.GameStatus !== 2 || t < start || t > now) continue;
+        const hs = g.HomeGoals, as = g.AwayGoals;
+        const pg = g.PeriodSummary?.PeriodGoals;
+        let note = "", regH = null, regA = null;
+        if (pg?.Home?.length >= 3) {
+          const rh = pg.Home.slice(0, 3).reduce((a, b) => a + b, 0);
+          const ra = pg.Away.slice(0, 3).reduce((a, b) => a + b, 0);
+          if (rh === ra && hs !== as) {
+            const otH = pg.Home.slice(3).reduce((a, b) => a + b, 0);
+            const otA = pg.Away.slice(3).reduce((a, b) => a + b, 0);
+            note = otH !== otA ? "ja" : "vl";
+            regH = rh; regA = ra;
+          }
+        }
+        target.games.push({ t: t.toISOString(), home, away, hs, as, status: "post", note, regH, regA });
+      }
+    }
+  }
+  return out.map(({ _seen, ...l }) => {
+    l.upcoming.sort((a, b) => new Date(a.t) - new Date(b.t));
+    l.upcoming = l.upcoming.slice(0, NEXT_COUNT);
+    return l;
+  });
+}
+
+// ------------------------------------------------------------ Ruotsi (SHL, HockeyAllsvenskan)
+// shl.se:n oma sivusto käyttää tätä rajapintaa. Kausi ja sarjavaihe (runkosarja/pudotuspelit)
+// haetaan automaattisesti latest-ssgt-kutsulla, joten vaihtoa ei tarvitse tehdä käsin.
+const SWE_LEAGUES = [
+  { id: "shl", name: "SHL", series: "qQ9-bb0bzEWUk" },
+  // { id: "ha", name: "HockeyAllsvenskan", series: "qQ9-594cW8OWD" },  // pois käytöstä toistaiseksi, poista // ottaaksesi takaisin
+];
+
+async function fetchSwe(lg, now, start) {
+  const base = "https://www.shl.se/api/sports-v2";
+  const empty = { id: lg.id, name: lg.name, sport: "ih", games: [], upcoming: [] };
+  const ssgt = await getJSON(`${base}/latest-ssgt/${lg.series}`);
+  if (!ssgt?.season?.uuid || !ssgt?.gameType?.uuid) return empty;
+  const data = await getJSON(`${base}/game-schedule?seasonUuid=${ssgt.season.uuid}&seriesUuid=${lg.series}&gameTypeUuid=${ssgt.gameType.uuid}&gamePlace=all&played=all`);
+  const list = data?.gameInfo || [];
+  const nm = (t) => t?.names?.short || t?.names?.long || t?.code || "?";
+  const games = [];
+  const upcoming = [];
+  for (const g of list) {
+    const t = new Date(g.rawStartDateTime);
+    const home = nm(g.homeTeamInfo), away = nm(g.awayTeamInfo);
+    if (g.state === "pre-game") {
+      if (t > now) upcoming.push({ t: t.toISOString(), home, away });
+      continue;
+    }
+    if (g.state !== "post-game" || t < start || t > now) continue;
+    const hs = g.homeTeamInfo.score, as = g.awayTeamInfo.score;
+    const note = g.shootout ? "vl" : g.overtime ? "ja" : "";
+    const reg = note ? Math.min(hs, as) : null;
+    games.push({ t: t.toISOString(), home, away, hs, as, status: "post", note, regH: reg, regA: reg });
+  }
+  upcoming.sort((a, b) => new Date(a.t) - new Date(b.t));
+  return { ...empty, games, upcoming: upcoming.slice(0, NEXT_COUNT) };
+}
+
 // ------------------------------------------------------------ ESPN
 async function fetchEspn(lg, now, start) {
   const days = [];
@@ -169,11 +288,19 @@ export default async () => {
   const start = new Date(now.getTime() - DAYS * 864e5);
   start.setUTCHours(0, 0, 0, 0);
 
-  const leagues = await Promise.all([
+  const [liiga, mestis, finHockey, ...rest] = await Promise.all([
     fetchLiiga(now, start),
     fetchMestis(now, start),
+    fetchFinHockey(now, start),
+    ...SWE_LEAGUES.map((lg) => fetchSwe(lg, now, start)),
     ...ESPN_LEAGUES.map((lg) => fetchEspn(lg, now, start)),
   ]);
+  const [nt, suomisarja] = finHockey;
+  // Sarjojen järjestys sivulla (tunnisteet). Listaamattomat sarjat tulevat perään alkuperäisessä järjestyksessä.
+  const ORDER = ["liiga", "mestis", "suomisarja", "nhl", "nt", "shl", "ha"];
+  const rank = (l) => { const i = ORDER.indexOf(l.id); return i < 0 ? ORDER.length : i; };
+  const leagues = [nt, liiga, mestis, suomisarja, ...rest].filter(Boolean)
+    .map((l, i) => [l, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(([l]) => l);
 
   const body = JSON.stringify({ generated: now.toISOString(), leagues });
   return new Response(body, {

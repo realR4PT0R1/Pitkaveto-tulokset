@@ -368,7 +368,7 @@ function renderNext() {
 
 function renderStats() {
   const wrap = document.getElementById("statwrap"); wrap.innerHTML = "";
-  if (!DATA) return;
+  if (!DATA || state.league === "all") return;  // tilastot vain yksittäisen sarjan näkymässä
   const base = scoped();
   const names = [...new Set(base.map(g => g.league))];
   const order = leagues.map(l => l.name);
