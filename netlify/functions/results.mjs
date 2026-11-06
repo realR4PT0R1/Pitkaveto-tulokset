@@ -16,6 +16,11 @@ const ESPN_LEAGUES = [
   { id: "epl", name: "Valioliiga", sport: "fb", path: "soccer/eng.1" },
   { id: "laliga", name: "La Liga", sport: "fb", path: "soccer/esp.1" },
   { id: "ucl", name: "Mestarien liiga", sport: "fb", path: "soccer/uefa.champions" },
+  { id: "uel", name: "Eurooppa-liiga", sport: "fb", path: "soccer/uefa.europa" },
+  { id: "uecl", name: "Konferenssiliiga", sport: "fb", path: "soccer/uefa.europa.conf" },
+  { id: "bundesliga", name: "Bundesliiga", sport: "fb", path: "soccer/ger.1" },
+  { id: "seriea", name: "Serie A", sport: "fb", path: "soccer/ita.1" },
+  { id: "ligue1", name: "Ligue 1", sport: "fb", path: "soccer/fra.1" },
   { id: "nhl", name: "NHL", sport: "ih", path: "hockey/nhl" },
   { id: "nba", name: "NBA", sport: "bb", path: "basketball/nba" },
 ];
