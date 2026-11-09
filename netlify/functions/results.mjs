@@ -81,7 +81,7 @@ async function fetchLiiga(now, start) {
       status: "post", note, regH, regA,
     });
   }
-  return { id: "liiga", name: "Suomi", sport: "ih", games, upcoming };
+  return { id: "liiga", name: "Liiga", sport: "ih", games, upcoming };
 }
 
 // ------------------------------------------------------------ Mestis
